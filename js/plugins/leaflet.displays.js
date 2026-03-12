@@ -96,8 +96,9 @@ export default void function (factory) {
                     let divIcon = L.divIcon({
                         html: iconHtml,
                         className: 'item-spawn-icon',
-                        iconAnchor: [0, 0],
-                        popupAnchor: [0, -18],
+                        iconSize: [28, 29],
+                        iconAnchor: [14, 15],
+                        popupAnchor: [0, -15],
                     });
 
                     item.coordinates.forEach(coord => {
