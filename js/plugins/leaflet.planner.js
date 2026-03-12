@@ -46,6 +46,8 @@ let plannerPinsLayer   = null;
 let plannerLinesLayer  = null;
 let plannerSuggLayer   = null;   // orange suggestion-location pins for selected card
 let dragSrcId          = null;
+let dragGroupSrcId     = null;  // group.id being dragged to reorder
+let groupDragFromHandle = false; // true only when drag initiated from the handle
 let plannerAddSearchQuery = '';
 let plannerAddSearchShouldFocus = false;
 let plannerAddTargetGroupId = null;
@@ -635,9 +637,19 @@ function renderPlanner() {
         runPtsById.set(item.id, runPts);
     });
 
-    plannerGroups.forEach(group => {
+    // Group drop zone helper — one before each group, one at the very end
+    const makeGroupDropZone = (insertIdx) => {
+        const gdz = document.createElement('div');
+        gdz.className = 'planner-group-drop-zone';
+        wireGroupDrop(gdz, insertIdx);
+        return gdz;
+    };
+
+    plannerGroups.forEach((group, gi) => {
+        container.appendChild(makeGroupDropZone(gi));
         container.appendChild(buildPlannerGroup(group, orderById, runPtsById));
     });
+    container.appendChild(makeGroupDropZone(plannerGroups.length));
 
     // Add-task search section
     container.appendChild(buildAddSection());
@@ -662,6 +674,7 @@ function buildPlannerGroup(group, orderById, runPtsById) {
     const toggleText = group.collapsed ? 'Show' : 'Hide';
     wrap.innerHTML =
         `<div class="planner-group-header">` +
+            `<span class="planner-group-drag-handle" title="Drag to reorder group">⠿</span>` +
             `<button class="planner-group-toggle" title="Expand/collapse group">${toggleLabel}</button>` +
             `<input class="planner-group-name" value="${esc(group.name)}" aria-label="Group name"/>` +
             `<span class="planner-group-meta">${group.items.length} tasks · ${pinnedCount} pinned · ${groupPts} pts</span>` +
@@ -694,8 +707,27 @@ function buildPlannerGroup(group, orderById, runPtsById) {
     });
 
     header.addEventListener('click', e => {
-        if (e.target.closest('.planner-group-name, .planner-group-remove, .planner-group-toggle, .planner-group-toggle-text')) return;
+        if (e.target.closest('.planner-group-name, .planner-group-remove, .planner-group-toggle, .planner-group-toggle-text, .planner-group-drag-handle')) return;
         toggleGroupCollapsed();
+    });
+
+    // ── Group reorder drag ───────────────────────────────────────
+    const dragHandle = wrap.querySelector('.planner-group-drag-handle');
+    dragHandle.addEventListener('mousedown', () => { groupDragFromHandle = true; });
+    wrap.draggable = true;
+    wrap.addEventListener('dragstart', e => {
+        if (!groupDragFromHandle) { e.preventDefault(); return; }
+        groupDragFromHandle = false;
+        dragGroupSrcId = groupId;
+        dragSrcId = null;
+        wrap.classList.add('planner-group-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', '');
+    });
+    wrap.addEventListener('dragend', () => {
+        groupDragFromHandle = false;
+        dragGroupSrcId = null;
+        wrap.classList.remove('planner-group-dragging');
     });
 
     nameInput.addEventListener('click', e => e.stopPropagation());
@@ -770,8 +802,33 @@ function buildPlannerGroup(group, orderById, runPtsById) {
     return wrap;
 }
 
+function wireGroupDrop(el, insertIdx) {
+    el.addEventListener('dragover', e => {
+        if (!dragGroupSrcId) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        el.classList.add('planner-group-drop-over');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('planner-group-drop-over'));
+    el.addEventListener('drop', e => {
+        if (!dragGroupSrcId) return;
+        e.preventDefault();
+        el.classList.remove('planner-group-drop-over');
+        const srcIdx = plannerGroups.findIndex(g => g.id === dragGroupSrcId);
+        if (srcIdx === -1) return;
+        let target = insertIdx;
+        if (srcIdx < target) target--;
+        const [moved] = plannerGroups.splice(srcIdx, 1);
+        plannerGroups.splice(target, 0, moved);
+        savePlanner();
+        redrawMapOverlays();
+        renderPlanner();
+    });
+}
+
 function wireExternalDrop(el, targetGroupId, insertIdx) {
     el.addEventListener('dragover', e => {
+        if (dragGroupSrcId) return;  // ignore when a group is being dragged
         e.preventDefault();
         // Internal reorder uses 'move'; external drags from task list use 'copy'
         e.dataTransfer.dropEffect = dragSrcId ? 'move' : 'copy';
@@ -779,6 +836,7 @@ function wireExternalDrop(el, targetGroupId, insertIdx) {
     });
     el.addEventListener('dragleave', () => el.classList.remove('planner-drop-zone-over'));
     el.addEventListener('drop', e => {
+        if (dragGroupSrcId) return;  // ignore when a group is being dragged
         e.preventDefault();
         el.classList.remove('planner-drop-zone-over');
 

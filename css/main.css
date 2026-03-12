@@ -754,6 +754,30 @@ img.huechange { filter: hue-rotate(120deg); }
     padding: 3px 6px;
 }
 .planner-group-remove:hover { border-color: #ff6060; color: #ff6060; }
+.planner-group-drag-handle {
+    flex: 0 0 auto;
+    color: #5a4a20;
+    cursor: grab;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    user-select: none;
+}
+.planner-group-drag-handle:hover { color: #c8a040; }
+.planner-group-drag-handle:active { cursor: grabbing; }
+.planner-group-dragging { opacity: 0.45; }
+.planner-group-drop-zone {
+    height: 6px;
+    margin: 2px 6px;
+    border: 1px dashed transparent;
+    border-radius: 4px;
+    transition: height 0.1s, background-color 0.1s, border-color 0.1s;
+}
+.planner-group-drop-over {
+    height: 22px;
+    border-color: #b4903c;
+    background-color: rgba(180, 144, 60, 0.18);
+}
 .planner-group-body {
     padding-bottom: 4px;
 }
