@@ -8,7 +8,7 @@ Backing Data
     Tidy generation scripts and add to repo
     Preload steps for diary tasks
     Add monster drop data to item search
-    fix cabbages(2) pawn
+    fix cabbages(2) spawn
 
 Planner Panel
     divider/way to group sections of planned tasks?
