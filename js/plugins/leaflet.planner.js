@@ -45,6 +45,8 @@ let plannerPinsLayer   = null;
 let plannerLinesLayer  = null;
 let plannerSuggLayer   = null;   // orange suggestion-location pins for selected card
 let dragSrcId          = null;
+let plannerAddSearchQuery = '';
+let plannerAddSearchShouldFocus = false;
 
 // ─── Persistence ──────────────────────────────────────────────────
 function loadPlanner() {
@@ -775,18 +777,21 @@ function buildAddSection() {
     // ── League task search ────────────────────────────────────────
     const input   = wrap.querySelector('#planner-search-input');
     const results = wrap.querySelector('#planner-search-results');
+    input.value = plannerAddSearchQuery;
 
-    input.addEventListener('input', () => {
-        const q = input.value.trim().toLowerCase();
+    function renderSearchResults() {
+        const q = plannerAddSearchQuery.trim().toLowerCase();
         results.innerHTML = '';
         if (!q || q.length < 2) return;
 
+        const existingTaskNames = new Set(plannerItems.filter(i => !i.virtual && i.taskName).map(i => i.taskName));
         const regions = window._getCurrentRegions ? window._getCurrentRegions() : null;
         const matches = allTasksRef.filter(t => {
             // Region filter: match enabled regions (null = all; tasks with no area are general, always included)
             if (regions !== null) {
                 if (t.area && !regions.includes(t.area)) return false;
             }
+            if (existingTaskNames.has(t.name)) return false;
             const hay = `${t.name} ${t.task} ${t.area || ''}`.toLowerCase();
             return hay.includes(q);
         }).slice(0, 12);
@@ -797,36 +802,46 @@ function buildAddSection() {
         }
 
         matches.forEach(task => {
-            const alreadyIn = plannerItems.some(i => i.taskName === task.name);
             const tier = tierFor(task.points || 10);
             const row = document.createElement('div');
             row.className = 'planner-search-result';
-            row.draggable = !alreadyIn;
+            row.draggable = true;
             row.innerHTML =
                 `<span class="planner-search-tier-dot" style="background:${tier.color}"></span>` +
                 `<span class="planner-search-result-name">${esc(task.name)}</span>` +
                 `<span class="planner-search-result-pts" style="color:${tier.color}">${task.points} pts</span>` +
-                `<button class="planner-search-add-btn" ${alreadyIn ? 'disabled' : ''}>${alreadyIn ? '✓' : '+ Add'}</button>`;
+                `<button class="planner-search-add-btn">+ Add</button>`;
 
-            if (!alreadyIn) {
-                row.querySelector('.planner-search-add-btn').addEventListener('click', () => {
-                    plannerItems.push({ id: genId(), taskName: task.name, pinCoords: null, comments: [] });
-                    savePlanner();
-                    input.value = '';
-                    results.innerHTML = '';
-                    redrawMapOverlays();
-                    renderPlanner();
-                });
-                // Allow dragging from search results directly onto the drop zones
-                row.addEventListener('dragstart', e => {
-                    dragSrcId = null;
-                    e.dataTransfer.effectAllowed = 'copy';
-                    e.dataTransfer.setData('text/plain', task.name);
-                });
-            }
+            row.querySelector('.planner-search-add-btn').addEventListener('click', () => {
+                plannerItems.push({ id: genId(), taskName: task.name, pinCoords: null, comments: [] });
+                savePlanner();
+                plannerAddSearchShouldFocus = true;
+                redrawMapOverlays();
+                renderPlanner();
+            });
+            // Allow dragging from search results directly onto the drop zones
+            row.addEventListener('dragstart', e => {
+                dragSrcId = null;
+                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.setData('text/plain', task.name);
+            });
             results.appendChild(row);
         });
+    }
+
+    input.addEventListener('input', () => {
+        plannerAddSearchQuery = input.value;
+        renderSearchResults();
     });
+
+    renderSearchResults();
+    if (plannerAddSearchShouldFocus) {
+        plannerAddSearchShouldFocus = false;
+        requestAnimationFrame(() => {
+            input.focus();
+            input.setSelectionRange(input.value.length, input.value.length);
+        });
+    }
 
     // ── Custom step creation ──────────────────────────────────────
     const virtualNameInput = wrap.querySelector('#planner-virtual-name-input');
