@@ -16,6 +16,7 @@
 
 const PLANNER_KEY    = 'league_planner_v1';
 const NEARBY_WINDOW  = 2; // tasks either side to show when mode = 'nearby'
+const DEFAULT_GROUP_NAME = 'Main';
 
 // ─── Tier colour helpers ──────────────────────────────────────────
 const TIERS = [
@@ -33,7 +34,7 @@ function tierFor(points) {
 const VIRTUAL_COLOR = '#00cccc'; // teal – visually distinct from all tier colours
 
 // ─── State ────────────────────────────────────────────────────────
-let plannerItems = [];   // [{ id, taskName, pinCoords:{lat,lng}|null, comments:[] }]
+let plannerGroups = [];  // [{ id, name, collapsed, items:[{ id, taskName, ... }] }]
 let allTasksRef  = [];   // mirror of allTasks from leaflet.tasks.js
 let plannerMap   = null;
 let plannerLineMode    = 'all';      // 'all' | 'nearby' | 'none'
@@ -45,17 +46,94 @@ let plannerPinsLayer   = null;
 let plannerLinesLayer  = null;
 let plannerSuggLayer   = null;   // orange suggestion-location pins for selected card
 let dragSrcId          = null;
+let dragGroupSrcId     = null;  // group.id being dragged to reorder
+let groupDragFromHandle = false; // true only when drag initiated from the handle
+let plannerAddSearchQuery = '';
+let plannerAddSearchShouldFocus = false;
+let plannerAddTargetGroupId = null;
+
+function normalizePlannerItem(raw) {
+    return {
+        ...raw,
+        id: raw && raw.id ? raw.id : genId(),
+        comments: Array.isArray(raw && raw.comments) ? raw.comments : [],
+    };
+}
+
+function makePlannerGroup(name, items) {
+    return {
+        id: genId(),
+        name: (name || '').trim() || DEFAULT_GROUP_NAME,
+        collapsed: false,
+        items: (items || []).map(normalizePlannerItem),
+    };
+}
+
+function ensurePlannerGroups() {
+    if (!Array.isArray(plannerGroups)) plannerGroups = [];
+    plannerGroups = plannerGroups.map(g => ({
+        id: g && g.id ? g.id : genId(),
+        name: (g && g.name ? g.name : DEFAULT_GROUP_NAME),
+        collapsed: !!(g && g.collapsed),
+        items: Array.isArray(g && g.items) ? g.items.map(normalizePlannerItem) : [],
+    }));
+    if (plannerGroups.length === 0) {
+        plannerGroups = [makePlannerGroup(DEFAULT_GROUP_NAME, [])];
+    }
+    if (!plannerAddTargetGroupId || !plannerGroups.some(g => g.id === plannerAddTargetGroupId)) {
+        plannerAddTargetGroupId = plannerGroups[0].id;
+    }
+}
+
+function allPlannerItems() {
+    return plannerGroups.flatMap(g => g.items);
+}
+
+function findGroupById(groupId) {
+    return plannerGroups.find(g => g.id === groupId) || null;
+}
+
+function findItemContext(itemId) {
+    for (let gi = 0; gi < plannerGroups.length; gi++) {
+        const group = plannerGroups[gi];
+        const ii = group.items.findIndex(i => i.id === itemId);
+        if (ii !== -1) {
+            return { group, groupIdx: gi, itemIdx: ii, item: group.items[ii] };
+        }
+    }
+    return null;
+}
+
+function removeItemById(itemId) {
+    const ctx = findItemContext(itemId);
+    if (!ctx) return null;
+    const [removed] = ctx.group.items.splice(ctx.itemIdx, 1);
+    return removed || null;
+}
 
 // ─── Persistence ──────────────────────────────────────────────────
 function loadPlanner() {
     try {
         const raw = localStorage.getItem(PLANNER_KEY);
-        if (raw) plannerItems = JSON.parse(raw);
-    } catch (_) { plannerItems = []; }
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                plannerGroups = [makePlannerGroup(DEFAULT_GROUP_NAME, parsed)];
+            } else if (parsed && Array.isArray(parsed.groups)) {
+                plannerGroups = parsed.groups;
+            } else {
+                plannerGroups = [makePlannerGroup(DEFAULT_GROUP_NAME, [])];
+            }
+        }
+    } catch (_) {
+        plannerGroups = [makePlannerGroup(DEFAULT_GROUP_NAME, [])];
+    }
+    ensurePlannerGroups();
 }
 
 function savePlanner() {
-    try { localStorage.setItem(PLANNER_KEY, JSON.stringify(plannerItems)); } catch (_) {}
+    ensurePlannerGroups();
+    try { localStorage.setItem(PLANNER_KEY, JSON.stringify({ version: 2, groups: plannerGroups })); } catch (_) {}
 }
 
 function genId() {
@@ -298,7 +376,7 @@ function redrawMapOverlays() {
     if (plannerLinesLayer) { map.removeLayer(plannerLinesLayer); plannerLinesLayer = null; }
     if (plannerSuggLayer)  { map.removeLayer(plannerSuggLayer);  plannerSuggLayer  = null; }
 
-    const pinned = plannerItems
+    const pinned = allPlannerItems()
         .map((item, idx) => ({ item, idx, task: getTask(item.taskName) }))
         .filter(x => x.item.pinCoords);
 
@@ -376,7 +454,8 @@ async function redrawSuggestionPins() {
     if (plannerSuggLayer) { map.removeLayer(plannerSuggLayer); plannerSuggLayer = null; }
     if (!plannerSelectedId) return;
 
-    const item = plannerItems.find(i => i.id === plannerSelectedId);
+    const itemCtx = findItemContext(plannerSelectedId);
+    const item = itemCtx ? itemCtx.item : null;
     if (!item || item.virtual) return;
     const task = getTask(item.taskName);
     if (!task) return;
@@ -433,7 +512,8 @@ function startPinning(itemId) {
         e.stopPropagation();   // prevent marker popup
         e.preventDefault();
         const latlng = map.mouseEventToLatLng(e);
-        const item = plannerItems.find(i => i.id === pinningItemId);
+        const pinCtx = findItemContext(pinningItemId);
+        const item = pinCtx ? pinCtx.item : null;
         if (item) {
             item.pinCoords = { lat: latlng.lat, lng: latlng.lng };
             savePlanner();
@@ -482,6 +562,9 @@ function renderPlanner() {
     const container = document.getElementById('planner-list');
     if (!container) return;
 
+    ensurePlannerGroups();
+    const flatItems = allPlannerItems();
+
     // Preserve scroll position
     const scrollTop = container.scrollTop;
 
@@ -491,21 +574,29 @@ function renderPlanner() {
     const ctrl = document.createElement('div');
     ctrl.id = 'planner-controls';
     ctrl.className = 'planner-controls';
-    const pinnedCount = plannerItems.filter(i => i.pinCoords).length;
-    let runningTotal = plannerItems.reduce((s, i) => {
+    const pinnedCount = flatItems.filter(i => i.pinCoords).length;
+    let runningTotal = flatItems.reduce((s, i) => {
         if (i.virtual) return s;
         const t = getTask(i.taskName);
         return s + (t ? (t.points || 10) : 10);
     }, 0);
     ctrl.innerHTML =
-        `<span class="planner-ctrl-label">Lines:</span>` +
-        ['all','nearby','none'].map(m =>
-            `<button class="planner-line-btn${plannerLineMode === m ? ' planner-line-btn-active' : ''}" data-mode="${m}">${m}</button>`
-        ).join('') +
-        `<span class="planner-ctrl-sep"></span>` +
-        `<button class="planner-line-btn${plannerPinsVisible ? ' planner-line-btn-active' : ''}" id="planner-pins-toggle">Pins</button>` +
-        `<span class="planner-ctrl-sep"></span>` +
-        `<span class="planner-ctrl-label">${plannerItems.length} tasks · ${pinnedCount} pinned · ${runningTotal} pts total</span>`;
+        `<div class="planner-controls-row">` +
+            `<span class="planner-ctrl-label">Lines:</span>` +
+            ['all','nearby','none'].map(m =>
+                `<button class="planner-line-btn${plannerLineMode === m ? ' planner-line-btn-active' : ''}" data-mode="${m}">${m}</button>`
+            ).join('') +
+            `<span class="planner-ctrl-sep"></span>` +
+            `<button class="planner-line-btn${plannerPinsVisible ? ' planner-line-btn-active' : ''}" id="planner-pins-toggle">Pins</button>` +
+            `<button class="planner-line-btn" id="planner-group-add">+ Group</button>` +
+            `<span class="planner-ctrl-sep"></span>` +
+            `<span class="planner-ctrl-label">${flatItems.length} tasks · ${pinnedCount} pinned · ${runningTotal} pts total</span>` +
+        `</div>` +
+        `<div class="planner-controls-row">` +
+            `<button class="planner-line-btn" id="planner-export-btn" title="Download planner as JSON">⬇ Export JSON</button>` +
+            `<button class="planner-line-btn" id="planner-import-btn" title="Load planner from JSON file">⬆ Import JSON</button>` +
+            `<input type="file" id="planner-import-input" accept=".json,application/json" style="display:none"/>` +
+        `</div>`;
     ctrl.querySelectorAll && ctrl.querySelectorAll('.planner-line-btn[data-mode]').forEach(btn => {
         btn.addEventListener('click', () => {
             plannerLineMode = btn.dataset.mode;
@@ -521,37 +612,100 @@ function renderPlanner() {
             renderPlanner();
         });
     }
+    const addGroupBtn = ctrl.querySelector('#planner-group-add');
+    if (addGroupBtn) {
+        addGroupBtn.addEventListener('click', () => {
+            const name = (window.prompt('Group name?', '') || '').trim();
+            if (!name) return;
+            const newGroup = makePlannerGroup(name, []);
+            plannerGroups.push(newGroup);
+            plannerAddTargetGroupId = newGroup.id;
+            savePlanner();
+            renderPlanner();
+        });
+    }
+
+    const exportBtn = ctrl.querySelector('#planner-export-btn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', () => {
+            ensurePlannerGroups();
+            const data = JSON.stringify({ version: 2, groups: plannerGroups }, null, 2);
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            const date = new Date().toISOString().slice(0, 10);
+            a.href = url;
+            a.download = `planner-${date}.json`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+    }
+
+    const importBtn   = ctrl.querySelector('#planner-import-btn');
+    const importInput = ctrl.querySelector('#planner-import-input');
+    if (importBtn && importInput) {
+        importBtn.addEventListener('click', () => importInput.click());
+        importInput.addEventListener('change', () => {
+            const file = importInput.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = evt => {
+                try {
+                    const parsed = JSON.parse(evt.target.result);
+                    // Accept { version:2, groups:[] } or legacy flat array
+                    if (Array.isArray(parsed)) {
+                        plannerGroups = [makePlannerGroup(DEFAULT_GROUP_NAME, parsed)];
+                    } else if (parsed && Array.isArray(parsed.groups)) {
+                        plannerGroups = parsed.groups;
+                    } else {
+                        alert('Unrecognised planner file format.');
+                        return;
+                    }
+                    ensurePlannerGroups();
+                    savePlanner();
+                    redrawMapOverlays();
+                    renderPlanner();
+                } catch (err) {
+                    alert('Failed to parse JSON: ' + err.message);
+                }
+                importInput.value = ''; // allow re-importing same file
+            };
+            reader.readAsText(file);
+        });
+    }
     container.appendChild(ctrl);
 
-    // Drop zone when items exist (allow dragging from task list)
-    const dropTop = document.createElement('div');
-    dropTop.className = 'planner-drop-zone planner-drop-top';
-    dropTop.textContent = '+ Drop task here (top)';
-    wireExternalDrop(dropTop, 0);
-    container.appendChild(dropTop);
-
-    if (plannerItems.length === 0) {
+    if (flatItems.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'task-panel-empty';
         empty.innerHTML = 'No tasks planned yet.<br><small style="color:#5a4a20;">Use the search below or drag tasks from the Active tab.</small>';
         container.appendChild(empty);
-    } else {
-        // Running point total
-        let runPts = 0;
-        plannerItems.forEach((item, idx) => {
-            const task = item.virtual ? null : getTask(item.taskName);
-            const pts  = item.virtual ? 0 : (task ? (task.points || 10) : 10);
-            runPts += pts;
-            container.appendChild(buildPlannerCard(item, task, pts, runPts, idx));
-
-            // Drop zone between cards
-            const dz = document.createElement('div');
-            dz.className = 'planner-drop-zone';
-            dz.textContent = '↓';
-            wireExternalDrop(dz, idx + 1);
-            container.appendChild(dz);
-        });
     }
+
+    const orderById = new Map();
+    const runPtsById = new Map();
+    let runPts = 0;
+    flatItems.forEach((item, idx) => {
+        const task = item.virtual ? null : getTask(item.taskName);
+        const pts  = item.virtual ? 0 : (task ? (task.points || 10) : 10);
+        runPts += pts;
+        orderById.set(item.id, idx + 1);
+        runPtsById.set(item.id, runPts);
+    });
+
+    // Group drop zone helper — one before each group, one at the very end
+    const makeGroupDropZone = (insertIdx) => {
+        const gdz = document.createElement('div');
+        gdz.className = 'planner-group-drop-zone';
+        wireGroupDrop(gdz, insertIdx);
+        return gdz;
+    };
+
+    plannerGroups.forEach((group, gi) => {
+        container.appendChild(makeGroupDropZone(gi));
+        container.appendChild(buildPlannerGroup(group, orderById, runPtsById));
+    });
+    container.appendChild(makeGroupDropZone(plannerGroups.length));
 
     // Add-task search section
     container.appendChild(buildAddSection());
@@ -559,8 +713,178 @@ function renderPlanner() {
     container.scrollTop = scrollTop;
 }
 
-function wireExternalDrop(el, insertIdx) {
+function buildPlannerGroup(group, orderById, runPtsById) {
+    const wrap = document.createElement('div');
+    wrap.className = 'planner-group';
+    wrap.dataset.groupId = group.id;
+
+    const pinnedCount = group.items.filter(i => i.pinCoords).length;
+    const groupPts = group.items.reduce((s, i) => {
+        if (i.virtual) return s;
+        const t = getTask(i.taskName);
+        return s + (t ? (t.points || 10) : 10);
+    }, 0);
+
+    const canRemove = plannerGroups.length > 1;
+    const toggleLabel = group.collapsed ? '▸' : '▾';
+    const toggleText = group.collapsed ? 'Show' : 'Hide';
+    wrap.innerHTML =
+        `<div class="planner-group-header">` +
+            `<span class="planner-group-drag-handle" title="Drag to reorder group">⠿</span>` +
+            `<button class="planner-group-toggle" title="Expand/collapse group">${toggleLabel}</button>` +
+            `<input class="planner-group-name" value="${esc(group.name)}" aria-label="Group name"/>` +
+            `<span class="planner-group-meta">${group.items.length} tasks · ${pinnedCount} pinned · ${groupPts} pts</span>` +
+            `<button class="planner-group-toggle-text" title="Expand/collapse group">${toggleText}</button>` +
+            (canRemove ? `<button class="planner-group-remove" title="Delete group (moves tasks)">✕</button>` : '') +
+        `</div>`;
+
+    const groupId = group.id;
+    const header = wrap.querySelector('.planner-group-header');
+    const toggleBtn = wrap.querySelector('.planner-group-toggle');
+    const toggleTextBtn = wrap.querySelector('.planner-group-toggle-text');
+    const nameInput = wrap.querySelector('.planner-group-name');
+    const removeBtn = wrap.querySelector('.planner-group-remove');
+
+    const toggleGroupCollapsed = () => {
+        const liveGroup = findGroupById(groupId);
+        if (!liveGroup) return;
+        liveGroup.collapsed = !liveGroup.collapsed;
+        savePlanner();
+        renderPlanner();
+    };
+
+    toggleBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleGroupCollapsed();
+    });
+    toggleTextBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleGroupCollapsed();
+    });
+
+    header.addEventListener('click', e => {
+        if (e.target.closest('.planner-group-name, .planner-group-remove, .planner-group-toggle, .planner-group-toggle-text, .planner-group-drag-handle')) return;
+        toggleGroupCollapsed();
+    });
+
+    // ── Group reorder drag ───────────────────────────────────────
+    const dragHandle = wrap.querySelector('.planner-group-drag-handle');
+    dragHandle.addEventListener('mousedown', () => { groupDragFromHandle = true; });
+    wrap.draggable = true;
+    wrap.addEventListener('dragstart', e => {
+        if (!groupDragFromHandle) { return; }
+        groupDragFromHandle = false;
+        dragGroupSrcId = groupId;
+        dragSrcId = null;
+        wrap.classList.add('planner-group-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', '');
+    });
+    wrap.addEventListener('dragend', () => {
+        groupDragFromHandle = false;
+        dragGroupSrcId = null;
+        wrap.classList.remove('planner-group-dragging');
+    });
+
+    nameInput.addEventListener('click', e => e.stopPropagation());
+    nameInput.addEventListener('input', () => {
+        const liveGroup = findGroupById(groupId);
+        if (!liveGroup) return;
+        liveGroup.name = nameInput.value;
+        savePlanner();
+    });
+    nameInput.addEventListener('blur', () => {
+        const liveGroup = findGroupById(groupId);
+        if (!liveGroup) return;
+        const next = nameInput.value.trim() || DEFAULT_GROUP_NAME;
+        if (next !== liveGroup.name) {
+            liveGroup.name = next;
+            savePlanner();
+            renderPlanner();
+        }
+    });
+    nameInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            nameInput.blur();
+        }
+    });
+
+    if (removeBtn) {
+        removeBtn.addEventListener('click', e => {
+            e.stopPropagation();
+            if (plannerGroups.length <= 1) return;
+            const liveGroup = findGroupById(groupId);
+            if (!liveGroup) return;
+            const fallbackGroup = plannerGroups.find(g => g.id !== groupId);
+            if (!fallbackGroup) return;
+            fallbackGroup.items = fallbackGroup.items.concat(liveGroup.items);
+            plannerGroups = plannerGroups.filter(g => g.id !== groupId);
+            if (plannerAddTargetGroupId === groupId) plannerAddTargetGroupId = fallbackGroup.id;
+            savePlanner();
+            redrawMapOverlays();
+            renderPlanner();
+        });
+    }
+
+    if (group.collapsed) {
+        return wrap;
+    }
+
+    const body = document.createElement('div');
+    body.className = 'planner-group-body';
+
+    const dropTop = document.createElement('div');
+    dropTop.className = 'planner-drop-zone planner-drop-top';
+    dropTop.textContent = '+ Drop task here';
+    wireExternalDrop(dropTop, group.id, 0);
+    body.appendChild(dropTop);
+
+    group.items.forEach((item, idxInGroup) => {
+        const task = item.virtual ? null : getTask(item.taskName);
+        const pts  = item.virtual ? 0 : (task ? (task.points || 10) : 10);
+        const orderNum = orderById.get(item.id) || 0;
+        const runPts = runPtsById.get(item.id) || 0;
+        body.appendChild(buildPlannerCard(item, task, pts, runPts, orderNum));
+
+        const dz = document.createElement('div');
+        dz.className = 'planner-drop-zone';
+        dz.textContent = '↓';
+        wireExternalDrop(dz, group.id, idxInGroup + 1);
+        body.appendChild(dz);
+    });
+
+    wrap.appendChild(body);
+    return wrap;
+}
+
+function wireGroupDrop(el, insertIdx) {
     el.addEventListener('dragover', e => {
+        if (!dragGroupSrcId) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        el.classList.add('planner-group-drop-over');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('planner-group-drop-over'));
+    el.addEventListener('drop', e => {
+        if (!dragGroupSrcId) return;
+        e.preventDefault();
+        el.classList.remove('planner-group-drop-over');
+        const srcIdx = plannerGroups.findIndex(g => g.id === dragGroupSrcId);
+        if (srcIdx === -1) return;
+        let target = insertIdx;
+        if (srcIdx < target) target--;
+        const [moved] = plannerGroups.splice(srcIdx, 1);
+        plannerGroups.splice(target, 0, moved);
+        savePlanner();
+        redrawMapOverlays();
+        renderPlanner();
+    });
+}
+
+function wireExternalDrop(el, targetGroupId, insertIdx) {
+    el.addEventListener('dragover', e => {
+        if (dragGroupSrcId) return;  // ignore when a group is being dragged
         e.preventDefault();
         // Internal reorder uses 'move'; external drags from task list use 'copy'
         e.dataTransfer.dropEffect = dragSrcId ? 'move' : 'copy';
@@ -568,18 +892,20 @@ function wireExternalDrop(el, insertIdx) {
     });
     el.addEventListener('dragleave', () => el.classList.remove('planner-drop-zone-over'));
     el.addEventListener('drop', e => {
+        if (dragGroupSrcId) return;  // ignore when a group is being dragged
         e.preventDefault();
         el.classList.remove('planner-drop-zone-over');
 
         // Internal reorder
         const srcId = dragSrcId;
         if (srcId) {
-            const srcIdx = plannerItems.findIndex(i => i.id === srcId);
-            if (srcIdx !== -1) {
+            const srcCtx = findItemContext(srcId);
+            const targetGroup = findGroupById(targetGroupId);
+            if (srcCtx && targetGroup) {
                 let target = insertIdx;
-                if (srcIdx < target) target--; // account for removal shifting
-                const [moved] = plannerItems.splice(srcIdx, 1);
-                plannerItems.splice(target, 0, moved);
+                if (srcCtx.group.id === targetGroupId && srcCtx.itemIdx < target) target--;
+                const [moved] = srcCtx.group.items.splice(srcCtx.itemIdx, 1);
+                targetGroup.items.splice(target, 0, moved);
                 savePlanner();
                 redrawMapOverlays();
                 renderPlanner();
@@ -589,9 +915,10 @@ function wireExternalDrop(el, insertIdx) {
 
         // External drop from task list
         const taskName = e.dataTransfer.getData('text/plain');
-        if (taskName && !plannerItems.some(i => i.taskName === taskName)) {
+        const targetGroup = findGroupById(targetGroupId);
+        if (taskName && targetGroup && !allPlannerItems().some(i => i.taskName === taskName)) {
             const newItem = { id: genId(), taskName, pinCoords: null, comments: [] };
-            plannerItems.splice(insertIdx, 0, newItem);
+            targetGroup.items.splice(insertIdx, 0, newItem);
             savePlanner();
             redrawMapOverlays();
             renderPlanner();
@@ -599,7 +926,7 @@ function wireExternalDrop(el, insertIdx) {
     });
 }
 
-function buildPlannerCard(item, task, pts, runPts, idx) {
+function buildPlannerCard(item, task, pts, runPts, orderNum) {
     const isVirtual = !!item.virtual;
     const tier  = isVirtual ? { name: 'Custom step', color: VIRTUAL_COLOR } : tierFor(pts);
     const color = tier.color;
@@ -633,7 +960,7 @@ function buildPlannerCard(item, task, pts, runPts, idx) {
     card.innerHTML =
         `<div class="planner-card-header">` +
             `<span class="planner-drag-handle" title="Drag to reorder">⠿</span>` +
-            `<span class="planner-order-num">${idx + 1}</span>` +
+            `<span class="planner-order-num">${orderNum}</span>` +
             `<span class="planner-tier-dot" style="background:${color}" title="${tier.name}${isVirtual ? '' : ` (${pts} pts)`}"></span>` +
             headerMiddle +
             `<span class="planner-running-pts" title="Running total">${runPts} pts</span>` +
@@ -662,12 +989,25 @@ function buildPlannerCard(item, task, pts, runPts, idx) {
     if (isVirtual) {
         const nameInput = card.querySelector('.planner-virtual-name');
         const descInput = card.querySelector('.planner-virtual-desc');
+        const itemId = item.id;
         const saveVirtual = () => {
-            item.customName = nameInput.value.trim();
-            item.customDesc = descInput.value.trim();
-            savePlanner();
-            redrawMapOverlays();
+            const ctx = findItemContext(itemId);
+            const liveItem = ctx ? ctx.item : null;
+            if (!liveItem) return;
+            const nextName = nameInput.value.trim();
+            const nextDesc = descInput.value.trim();
+            const changed = liveItem.customName !== nextName || liveItem.customDesc !== nextDesc;
+            liveItem.customName = nextName;
+            liveItem.customDesc = nextDesc;
+            if (changed) {
+                savePlanner();
+                redrawMapOverlays();
+            }
         };
+        nameInput.addEventListener('input', saveVirtual);
+        descInput.addEventListener('input', saveVirtual);
+        nameInput.addEventListener('change', saveVirtual);
+        descInput.addEventListener('change', saveVirtual);
         nameInput.addEventListener('blur', saveVirtual);
         nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); } });
         nameInput.addEventListener('click', e => e.stopPropagation());
@@ -701,7 +1041,7 @@ function buildPlannerCard(item, task, pts, runPts, idx) {
     // ── Remove ───────────────────────────────────────────────────
     card.querySelector('.planner-remove-btn').addEventListener('click', e => {
         e.stopPropagation();
-        plannerItems = plannerItems.filter(i => i.id !== item.id);
+        removeItemById(item.id);
         if (plannerSelectedId === item.id) plannerSelectedId = null;
         savePlanner();
         redrawMapOverlays();
@@ -722,7 +1062,10 @@ function buildPlannerCard(item, task, pts, runPts, idx) {
     if (clearPinBtn) {
         clearPinBtn.addEventListener('click', e => {
             e.stopPropagation();
-            item.pinCoords = null;
+            const ctx = findItemContext(item.id);
+            const liveItem = ctx ? ctx.item : null;
+            if (!liveItem) return;
+            liveItem.pinCoords = null;
             savePlanner();
             redrawMapOverlays();
             renderPlanner();
@@ -759,9 +1102,14 @@ function buildPlannerCard(item, task, pts, runPts, idx) {
 
 function buildAddSection() {
     const wrap = document.createElement('div');
+    ensurePlannerGroups();
     wrap.className = 'planner-add-section';
+    const groupOptionsHtml = plannerGroups.map(g =>
+        `<option value="${g.id}"${g.id === plannerAddTargetGroupId ? ' selected' : ''}>${esc(g.name)}</option>`
+    ).join('');
     wrap.innerHTML =
         `<div class="planner-add-label">Add league tasks:</div>` +
+        `<select id="planner-target-group" class="planner-search-input planner-target-group">${groupOptionsHtml}</select>` +
         `<input id="planner-search-input" class="planner-search-input" type="text" placeholder="Search tasks..." autocomplete="off"/>` +
         `<div id="planner-search-results" class="planner-search-results"></div>` +
         `<div class="planner-add-divider"></div>` +
@@ -773,23 +1121,42 @@ function buildAddSection() {
         `</div>`;
 
     // ── League task search ────────────────────────────────────────
+    const groupSelect = wrap.querySelector('#planner-target-group');
     const input   = wrap.querySelector('#planner-search-input');
     const results = wrap.querySelector('#planner-search-results');
+    input.value = plannerAddSearchQuery;
 
-    input.addEventListener('input', () => {
-        const q = input.value.trim().toLowerCase();
+    const getTargetGroup = () => {
+        const current = findGroupById(plannerAddTargetGroupId);
+        if (current) return current;
+        ensurePlannerGroups();
+        return plannerGroups[0];
+    };
+
+    groupSelect.addEventListener('change', () => {
+        plannerAddTargetGroupId = groupSelect.value;
+        savePlanner();
+    });
+
+    function renderSearchResults() {
+        const q = plannerAddSearchQuery.trim().toLowerCase();
         results.innerHTML = '';
         if (!q || q.length < 2) return;
 
+        const existingTaskNames = new Set(allPlannerItems().filter(i => !i.virtual && i.taskName).map(i => i.taskName));
         const regions = window._getCurrentRegions ? window._getCurrentRegions() : null;
         const matches = allTasksRef.filter(t => {
             // Region filter: match enabled regions (null = all; tasks with no area are general, always included)
             if (regions !== null) {
                 if (t.area && !regions.includes(t.area)) return false;
             }
+            if (existingTaskNames.has(t.name)) return false;
             const hay = `${t.name} ${t.task} ${t.area || ''}`.toLowerCase();
             return hay.includes(q);
-        }).slice(0, 12);
+        }).sort((a, b) => {
+            const pct = s => parseFloat((s && s.completion || '0').replace('%', '')) || 0;
+            return pct(b) - pct(a);
+        }).slice(0, 200);
 
         if (matches.length === 0) {
             results.innerHTML = '<div class="planner-no-results">No tasks found.</div>';
@@ -797,36 +1164,49 @@ function buildAddSection() {
         }
 
         matches.forEach(task => {
-            const alreadyIn = plannerItems.some(i => i.taskName === task.name);
             const tier = tierFor(task.points || 10);
             const row = document.createElement('div');
             row.className = 'planner-search-result';
-            row.draggable = !alreadyIn;
+            row.draggable = true;
             row.innerHTML =
                 `<span class="planner-search-tier-dot" style="background:${tier.color}"></span>` +
                 `<span class="planner-search-result-name">${esc(task.name)}</span>` +
                 `<span class="planner-search-result-pts" style="color:${tier.color}">${task.points} pts</span>` +
-                `<button class="planner-search-add-btn" ${alreadyIn ? 'disabled' : ''}>${alreadyIn ? '✓' : '+ Add'}</button>`;
+                `<span class="planner-search-result-completion" title="Player completion rate">${task.completion || ''}</span>` +
+                `<button class="planner-search-add-btn">+ Add</button>`;
 
-            if (!alreadyIn) {
-                row.querySelector('.planner-search-add-btn').addEventListener('click', () => {
-                    plannerItems.push({ id: genId(), taskName: task.name, pinCoords: null, comments: [] });
-                    savePlanner();
-                    input.value = '';
-                    results.innerHTML = '';
-                    redrawMapOverlays();
-                    renderPlanner();
-                });
-                // Allow dragging from search results directly onto the drop zones
-                row.addEventListener('dragstart', e => {
-                    dragSrcId = null;
-                    e.dataTransfer.effectAllowed = 'copy';
-                    e.dataTransfer.setData('text/plain', task.name);
-                });
-            }
+            row.querySelector('.planner-search-add-btn').addEventListener('click', () => {
+                const targetGroup = getTargetGroup();
+                if (!targetGroup) return;
+                targetGroup.items.push({ id: genId(), taskName: task.name, pinCoords: null, comments: [] });
+                savePlanner();
+                plannerAddSearchShouldFocus = true;
+                redrawMapOverlays();
+                renderPlanner();
+            });
+            // Allow dragging from search results directly onto the drop zones
+            row.addEventListener('dragstart', e => {
+                dragSrcId = null;
+                e.dataTransfer.effectAllowed = 'copy';
+                e.dataTransfer.setData('text/plain', task.name);
+            });
             results.appendChild(row);
         });
+    }
+
+    input.addEventListener('input', () => {
+        plannerAddSearchQuery = input.value;
+        renderSearchResults();
     });
+
+    renderSearchResults();
+    if (plannerAddSearchShouldFocus) {
+        plannerAddSearchShouldFocus = false;
+        requestAnimationFrame(() => {
+            input.focus();
+            input.setSelectionRange(input.value.length, input.value.length);
+        });
+    }
 
     // ── Custom step creation ──────────────────────────────────────
     const virtualNameInput = wrap.querySelector('#planner-virtual-name-input');
@@ -835,7 +1215,9 @@ function buildAddSection() {
     const createVirtualStep = () => {
         const name = virtualNameInput.value.trim();
         if (!name) { virtualNameInput.focus(); return; }
-        plannerItems.push({
+        const targetGroup = getTargetGroup();
+        if (!targetGroup) return;
+        targetGroup.items.push({
             id: genId(),
             virtual: true,
             customName: name,
@@ -859,12 +1241,14 @@ function buildAddSection() {
 // ─── Public API ───────────────────────────────────────────────────
 // Called by leaflet.tasks.js to add a task from the active list
 window._plannerAddTask = function(taskName) {
-    if (plannerItems.some(i => i.taskName === taskName)) {
+    if (allPlannerItems().some(i => i.taskName === taskName)) {
         // Already added – just switch to planner tab
         activatePlannerTab();
         return;
     }
-    plannerItems.push({ id: genId(), taskName, pinCoords: null, comments: [] });
+    ensurePlannerGroups();
+    const targetGroup = findGroupById(plannerAddTargetGroupId) || plannerGroups[0];
+    targetGroup.items.push({ id: genId(), taskName, pinCoords: null, comments: [] });
     savePlanner();
     redrawMapOverlays();
     activatePlannerTab();
@@ -937,7 +1321,9 @@ function initPlanner(map) {
     function tryGetTasks() {
         if (window._allTasksRef && window._allTasksRef.length > 0) {
             allTasksRef = window._allTasksRef;
-            // Render if planner tab is already active
+            // Always redraw map overlays so saved pins appear immediately on load
+            redrawMapOverlays();
+            // Also render the UI if the planner tab is already active
             if (document.querySelector('.planner-card') !== null ||
                 document.querySelector('.task-tab[data-tab="planner"]')?.classList.contains('task-tab-active')) {
                 renderPlanner();

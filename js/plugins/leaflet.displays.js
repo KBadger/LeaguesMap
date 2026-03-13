@@ -88,7 +88,7 @@ export default void function (factory) {
                         }
                     }
 
-                    const fallbackHtml = `<div class=\'item-spawn-icon-fallback\'></div>`;
+                    const fallbackHtml = `<div class='item-spawn-icon-fallback'></div>`;
                     let iconHtml = itemId !== null
                         ? `<img src="https://raw.githubusercontent.com/runelite/static.runelite.net/refs/heads/gh-pages/cache/item/icon/${itemId}.png" alt="${item.page_name}" class="item-spawn-icon-img" onerror="this.outerHTML='${fallbackHtml}'">`
                         : fallbackHtml;
@@ -96,8 +96,9 @@ export default void function (factory) {
                     let divIcon = L.divIcon({
                         html: iconHtml,
                         className: 'item-spawn-icon',
-                        iconAnchor: [0, 0],
-                        popupAnchor: [0, -18],
+                        iconSize: [28, 29],
+                        iconAnchor: [14, 15],
+                        popupAnchor: [0, -15],
                     });
 
                     item.coordinates.forEach(coord => {

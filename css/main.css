@@ -654,11 +654,16 @@ img.huechange { filter: hue-rotate(120deg); }
 .planner-controls {
     flex: 0 0 auto;
     display: flex;
-    align-items: center;
-    gap: 5px;
+    flex-direction: column;
+    gap: 4px;
     padding: 5px 8px;
     background-color: #1e1600;
     border-bottom: 1px solid #3a2a00;
+}
+.planner-controls-row {
+    display: flex;
+    align-items: center;
+    gap: 5px;
     flex-wrap: wrap;
 }
 .planner-ctrl-label {
@@ -682,6 +687,104 @@ img.huechange { filter: hue-rotate(120deg); }
     background-color: #3a2600;
     border-color: #ffd700;
     color: #ffd700;
+}
+
+/* Planner groups */
+.planner-group {
+    margin: 6px 6px 0;
+    border: 1px solid #3a2800;
+    border-radius: 4px;
+    background-color: #1a1200;
+}
+.planner-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-bottom: 1px solid #2a1f00;
+    cursor: pointer;
+}
+.planner-group-toggle {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    line-height: 18px;
+    text-align: center;
+    border: 1px solid #5a3f00;
+    border-radius: 3px;
+    background-color: #1e1600;
+    color: #c8a040;
+    cursor: pointer;
+}
+.planner-group-toggle:hover { border-color: #ffd700; color: #ffd700; }
+.planner-group-toggle-text {
+    flex: 0 0 auto;
+    font-size: 11px;
+    background-color: #1a1200;
+    border: 1px solid #3a2a00;
+    border-radius: 3px;
+    color: #8a7040;
+    padding: 2px 7px;
+    cursor: pointer;
+}
+.planner-group-toggle-text:hover { border-color: #ffd700; color: #ffd700; }
+.planner-group-name {
+    flex: 0 1 220px;
+    min-width: 120px;
+    background-color: #111;
+    border: 1px solid #3a2800;
+    border-radius: 3px;
+    color: #e8d5a0;
+    font-size: 12px;
+    padding: 3px 6px;
+}
+.planner-group-name:focus { border-color: #ffd700; outline: none; }
+.planner-group-meta {
+    flex: 1 1 auto;
+    font-size: 11px;
+    color: #8a7040;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.planner-group-remove {
+    flex: 0 0 auto;
+    border: 1px solid #5a3f00;
+    border-radius: 3px;
+    background: transparent;
+    color: #8a7040;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    padding: 3px 6px;
+}
+.planner-group-remove:hover { border-color: #ff6060; color: #ff6060; }
+.planner-group-drag-handle {
+    flex: 0 0 auto;
+    color: #5a4a20;
+    cursor: grab;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
+    user-select: none;
+}
+.planner-group-drag-handle:hover { color: #c8a040; }
+.planner-group-drag-handle:active { cursor: grabbing; }
+.planner-group-dragging { opacity: 0.45; }
+.planner-group-drop-zone {
+    height: 6px;
+    margin: 2px 6px;
+    border: 1px dashed transparent;
+    border-radius: 4px;
+    transition: height 0.1s, background-color 0.1s, border-color 0.1s;
+}
+.planner-group-drop-over {
+    height: 22px;
+    border-color: #b4903c;
+    background-color: rgba(180, 144, 60, 0.18);
+}
+.planner-group-body {
+    padding-bottom: 4px;
 }
 
 /* Drop zones */
@@ -1087,8 +1190,17 @@ img.huechange { filter: hue-rotate(120deg); }
 }
 .planner-search-input::placeholder { color: #4a3a10; }
 .planner-search-input:focus { border-color: #ffd700; }
+.planner-target-group { margin-bottom: 5px; }
 
-.planner-search-results { margin-top: 4px; }
+.planner-search-results {
+    margin-top: 4px;
+    max-height: 260px;
+    overflow-y: auto;
+}
+.planner-search-results::-webkit-scrollbar { width: 6px; }
+.planner-search-results::-webkit-scrollbar-track { background: #1a1a1a; }
+.planner-search-results::-webkit-scrollbar-thumb { background: #5a3f00; border-radius: 3px; }
+.planner-search-results::-webkit-scrollbar-thumb:hover { background: #ffd700; }
 .planner-search-result {
     display: flex;
     align-items: center;
@@ -1119,6 +1231,14 @@ img.huechange { filter: hue-rotate(120deg); }
     font-size: 11px;
     font-weight: bold;
     white-space: nowrap;
+}
+.planner-search-result-completion {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: #7aaa60;
+    white-space: nowrap;
+    min-width: 38px;
+    text-align: right;
 }
 .planner-search-add-btn {
     flex: 0 0 auto;
